@@ -8,13 +8,27 @@ dependencies:
   - pytorch
   - torchvision
   - pytorch-cuda=11.8
-  - numpy
+  - numpy<2.0
   - h5py
   - opencv
   - pip
   - pip:
-    - transformers
-    - peft
-    - bitsandbytes
-    - accelerate
+    # --- CORE REPO DEPENDENCIES ---
+    - transformers==4.40.1
+    - tokenizers==0.19.1
+    - timm==0.9.16
+    - accelerate==0.30.1
+    - peft==0.11.1
+    
+    # --- NEW ADDITIONS FOR NATIVE CODE ---
+    - json_numpy          # Required by openvla_utils.py
+    - draccus             # Required by finetune.py configs
+    - wandb               # Required for logging
+    - einops              # Often required by VLA/ViT backbones
+    - rich
+    
+    # --- UTILS ---
     - huggingface_hub
+    
+    # --- WINDOWS GPU SUPPORT ---
+    - bitsandbytes --prefer-binary --extra-index-url=https://jllllll.github.io/bitsandbytes-windows-webui
