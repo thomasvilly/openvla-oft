@@ -1,27 +1,5 @@
 import os
 import sys
-from unittest.mock import MagicMock
-
-# --- CRITICAL FIX: BYPASS LINUX/RLDS DEPENDENCIES ---
-# The OpenVLA repo tries to import 'dlimp', 'tensorflow', and 'rlds' 
-# even if we aren't using them. We trick Python into thinking they exist
-# so the imports don't crash on Windows.
-sys.modules["dlimp"] = MagicMock()
-sys.modules["tensorflow"] = MagicMock()
-sys.modules["tensorflow_datasets"] = MagicMock()
-sys.modules["dlimp.transforms"] = MagicMock()
-tf_mock = MagicMock()
-tf_mock.__spec__ = MagicMock()
-
-# --- ROBUST PATH SETUP ---
-script_dir = os.path.dirname(os.path.abspath(__file__))
-# Go up 3 levels (dobot -> robot -> experiments -> openvla-oft) to find the repo root
-repo_root = os.path.abspath(os.path.join(script_dir, "../../../"))
-
-if repo_root not in sys.path:
-    sys.path.insert(0, repo_root)
-
-# --- STANDARD IMPORTS ---
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -30,16 +8,23 @@ from transformers import AutoModelForVision2Seq, AutoProcessor
 from peft import LoraConfig, get_peft_model
 import tqdm
 
+# --- ROBUST PATH SETUP ---
+# Calculate path to the repo root (3 folders up)
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+repo_root = os.path.abspath(os.path.join(script_dir, "../../../"))
+
+# Add repo root to Python path so we can import 'prismatic' and 'dobot_dataset'
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
 # --- REPO IMPORTS ---
 from dobot_dataset import DobotDataset
 from prismatic.models.action_heads import L1RegressionActionHead
-from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
-from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
-
 # --- CONFIG ---
 MODEL_ID = "openvla/openvla-7b"
 OUTPUT_DIR = "checkpoints/dobot_native"
-DATA_ROOT = "D:/DOBOT/dataset_hdf5"
+DATA_ROOT = "/mnt/d/DOBOT/dataset_hdf5"
 
 BATCH_SIZE = 4
 GRAD_ACCUMULATION = 4
