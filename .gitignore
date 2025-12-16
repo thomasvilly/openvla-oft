@@ -147,6 +147,7 @@ dmypy.json
 # Caches and Datasets
 cache/
 data/
+checkpoints/
 
 # Rollout videos and wandb logs
 rollouts/
