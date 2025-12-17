@@ -58,7 +58,7 @@ class EvalConfig:
     
     # --- Visualization & Output Configuration ---
     # Set these to True only when you need to debug visually
-    visualize: bool = False        # Pop-up window? (Default: False for speed)
+    visualize: bool = True        # Pop-up window? (Default: False for speed)
     save_plots: bool = False       # Save every step as PNG? (Default: False)
     save_csv: bool = True          # Save the data report? (Default: True)
     save_first_image: bool = True  # Save just the first step's image for sanity check?
@@ -214,7 +214,7 @@ def main(cfg: EvalConfig):
                         print("  [Interaction] Press SPACE for next, 'q' to quit.")
                         
                         while True:
-                            if plt.waitforbuttonpress(timeout):
+                            if plt.waitforbuttonpress():
                                 break
                     
                     plt.close(fig)
