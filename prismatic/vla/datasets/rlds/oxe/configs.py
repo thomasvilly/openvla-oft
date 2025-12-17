@@ -707,17 +707,12 @@ OXE_DATASET_CONFIGS = {
         "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
     },
     "dobot_dataset": {
-        # We assume 1 camera named 'image'. Set others to None.
-        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": None},
+        # Update keys to include the wrist camera
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "image_wrist"},
         "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
         
-        # 'state' usually contains the robot's current joint/gripper positions
         "state_obs_keys": ["state"],
-        
-        # StateEncoding.POS_EULER = XYZ (3) + RPY (3) + Gripper (1) = 7 dims
         "state_encoding": StateEncoding.POS_EULER,
-        
-        # ActionEncoding.EEF_POS = Delta XYZ (3) + Delta RPY (3) + Gripper (1) = 7 dims
-        "action_encoding": ActionEncoding.EEF_POS,
+        "action_encoding": ActionEncoding.EEF_POS, # Correct for Temporal Deltas
     },
 }
