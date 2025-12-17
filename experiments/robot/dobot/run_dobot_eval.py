@@ -3,10 +3,8 @@ run_dobot_offline_eval.py
 
 Offline evaluation for OpenVLA trained on Dobot data.
 Features:
-- Visualizes Side-by-Side Comparison
-- Interactive Mode (Spacebar to advance)
-- Saves CSV report (Pred vs Actual)
-- Configurable Plot Saving and Visualization
+- Generates CSV report (Pred vs Actual)
+- Optional Visualization and Plot Saving
 """
 
 import os
@@ -35,11 +33,12 @@ from experiments.robot.openvla_utils import (
 
 @dataclass
 class EvalConfig:
-    # --- Paths (Updated per your request) ---
+    # --- Paths (Updated to match your snippet) ---
     pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--600_chkpt"
     
     # Dataset Config
     dataset_name: str = "dobot_dataset"
+    # Pointing explicitly to the version folder as requested
     data_dir: str = "/mnt/d/DOBOT/rlds_dataset_folder/dobot_dataset/1.0.0" 
     split: str = "train[:10%]" 
 
@@ -58,9 +57,12 @@ class EvalConfig:
     use_film: bool = False
     
     # --- Visualization & Output Configuration ---
-    visualize: bool = False         # Set True to see pop-up window and step through with Spacebar
-    save_plots: bool = False       # Set True to save images to disk (False to save disk space)
-    save_csv: bool = True          # Set True to save the CSV report
+    # Set these to True only when you need to debug visually
+    visualize: bool = False        # Pop-up window? (Default: False for speed)
+    save_plots: bool = False       # Save every step as PNG? (Default: False)
+    save_csv: bool = True          # Save the data report? (Default: True)
+    save_first_image: bool = True  # Save just the first step's image for sanity check?
+    
     output_dir: str = "./eval_outputs"
 
 @draccus.wrap()
@@ -74,11 +76,12 @@ def main(cfg: EvalConfig):
     
     # 2. Load RLDS Dataset
     print(f"Loading dataset {cfg.dataset_name} from {cfg.data_dir}...")
+    # Note: If this fails, try removing '/dobot_dataset/1.0.0' from the path
     builder = tfds.builder_from_directory(builder_dir=cfg.data_dir)
     ds = builder.as_dataset(split=cfg.split)
     
     # Handle Output Directory
-    if cfg.save_plots or cfg.save_csv:
+    if cfg.save_plots or cfg.save_csv or cfg.save_first_image:
         os.makedirs(cfg.output_dir, exist_ok=True)
         abs_path = os.path.abspath(cfg.output_dir)
         print(f"\n[INFO] Saving outputs to: {abs_path}")
@@ -163,8 +166,15 @@ def main(cfg: EvalConfig):
                     ])
 
                 # --- E. Visualization & Interaction ---
-                # Only enter this block if we are visualizing OR saving plots
-                if cfg.visualize or cfg.save_plots:
+                
+                # Check if we should render this frame
+                should_render = cfg.visualize or cfg.save_plots
+                
+                # Special Case: Save ONLY the very first image for sanity check
+                if cfg.save_first_image and episode_idx == 0 and step_idx == 0:
+                    should_render = True
+
+                if should_render:
                     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
                     
                     # Show Overhead
@@ -187,22 +197,24 @@ def main(cfg: EvalConfig):
                     fig.text(0.5, 0.05, info, ha='center', fontsize=12, 
                              bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray'))
                     
-                    # Save Logic (Only if save_plots is True)
+                    # 1. Save First Image Logic
+                    if cfg.save_first_image and episode_idx == 0 and step_idx == 0:
+                        save_path = os.path.join(cfg.output_dir, "sanity_check_first_frame.png")
+                        plt.savefig(save_path)
+                        print(f"[INFO] Saved sanity check image to {save_path}")
+
+                    # 2. Save All Plots Logic
                     if cfg.save_plots:
                         save_path = os.path.join(cfg.output_dir, f"ep{episode_idx}_step{step_idx}.png")
                         plt.savefig(save_path)
                     
-                    # Display Logic (Only if visualize is True)
+                    # 3. Visualization Logic
                     if cfg.visualize:
                         plt.show(block=False)
                         print("  [Interaction] Press SPACE for next, 'q' to quit.")
                         
-                        # Interactive loop
                         while True:
-                            # waitforbuttonpress returns True if key pressed, False if mouse click
-                            if plt.waitforbuttonpress():
-                                # If you want to check for specific key 'q', current matplotlib backends vary
-                                # but usually just closing the window manually or Ctrl+C is easier.
+                            if plt.waitforbuttonpress(timeout):
                                 break
                     
                     plt.close(fig)
@@ -210,7 +222,6 @@ def main(cfg: EvalConfig):
     except KeyboardInterrupt:
         print("\n[INFO] Evaluation interrupted by user.")
     finally:
-        # Ensure CSV is closed properly
         if csv_file:
             csv_file.close()
             print(f"[INFO] CSV file closed and saved.")
