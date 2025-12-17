@@ -148,6 +148,7 @@ dmypy.json
 cache/
 data/
 checkpoints/
+eval_outputs/
 
 # Rollout videos and wandb logs
 rollouts/
