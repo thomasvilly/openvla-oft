@@ -3,8 +3,9 @@ run_dobot_offline_eval.py
 
 Offline evaluation for OpenVLA trained on Dobot data.
 Features:
-- Generates detailed 7-DOF CSV report
-- Generates Summary Line Graphs (GT vs Pred vs Diff) at the end
+- Handles Action Chunking (10 steps) -> Receding Horizon Control
+- Handles 5-Dim Action Space (Pads to 7 for reporting)
+- Generates detailed CSV report & Summary Plots
 """
 
 import os
@@ -34,11 +35,13 @@ from experiments.robot.openvla_utils import (
 @dataclass
 class EvalConfig:
     # --- Paths ---
-    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--5000_chkpt"
+    # Update this to your actual Run 3 checkpoint path!
+    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--1500_chkpt"
     
     # Dataset Config
     dataset_name: str = "dobot_dataset"
-    data_dir: str = "/mnt/d/DOBOT/rlds_dataset_folder/dobot_dataset/1.0.0" 
+    # UPDATED: Point to 1.1.0 (The strided/pruned version)
+    data_dir: str = "/mnt/d/DOBOT/rlds_dataset_folder/dobot_dataset/1.1.0" 
     split: str = "train[:10%]" 
 
     # --- Model Params ---
@@ -52,16 +55,18 @@ class EvalConfig:
     
     # --- Action Params ---
     unnorm_key: str = "dobot_dataset" 
-    use_proprio: bool = False
+    # UPDATED: We used proprioception in Run 3!
+    use_proprio: bool = True
     use_film: bool = False
     
     # --- Visualization & Output Configuration ---
-    visualize: bool = False
-    save_plots: bool = False      
-    save_csv: bool = True         
-    save_first_image: bool = False
+    visualize: bool = False        # Set True to see it live
+    save_plots: bool = False       # Set True to save step images
+    save_csv: bool = True          # Save the math
+    save_first_image: bool = True  # Always good for debugging
     
     output_dir: str = "./eval_outputs"
+    action_scale = 1.0
 
 @draccus.wrap()
 def main(cfg: EvalConfig):
@@ -102,6 +107,7 @@ def main(cfg: EvalConfig):
             "Pred_Yaw", "GT_Yaw",
             "Pred_Grip", "GT_Grip"
         ])
+        print(f"[INFO] CSV report will be saved to: {csv_path}")
 
     # --- Metrics Storage for Plotting ---
     all_preds = []
@@ -124,6 +130,12 @@ def main(cfg: EvalConfig):
                 img_overhead = step['observation']['image'].numpy()
                 img_wrist = step['observation']['image_wrist'].numpy()
                 
+                # FIX: Color Swap (BGR -> RGB) if needed
+                # If your visualizer needed this, your eval needs it too for the model to see 'Red' correctly.
+                # Uncomment the next line if you confirmed your data is BGR
+                # img_overhead = img_overhead[..., ::-1]
+                # img_wrist = img_wrist[..., ::-1]
+
                 task_label = "do the task"
                 if 'language_instruction' in step:
                     inst = step['language_instruction'].numpy()
@@ -149,14 +161,22 @@ def main(cfg: EvalConfig):
                     print(f"Inference error at step {step_idx}: {e}")
                     continue
 
-                # --- C. Compare with Ground Truth ---
+                # --- C. Handle Chunking & Ground Truth ---
+                
+                # Receding Horizon Control: Take the FIRST action of the chunk
+                # Check for List OR Numpy Array (Output is usually (10, 5))
                 if isinstance(action_pred, list):
                     action_pred = action_pred[0]
+                elif isinstance(action_pred, np.ndarray) and action_pred.ndim > 1:
+                    action_pred = action_pred[0]
+                
+                if len(action_pred) >= 4:
+                    action_pred[:4] = action_pred[:4] * cfg.action_scale
                     
                 action_gt = step['action'].numpy()
 
                 # Pad vectors to ensure 7 dims (XYZ, RPY, Grip)
-                # This prevents crashes if your dataset only has 4 dims but we want to plot 7 slots
+                # Model outputs 5 dims. We pad with 0s to fill the 7-slot report.
                 pred_7d = np.pad(action_pred, (0, max(0, 7-len(action_pred))), mode='constant')
                 gt_7d = np.pad(action_gt, (0, max(0, 7-len(action_gt))), mode='constant')
 
@@ -183,9 +203,9 @@ def main(cfg: EvalConfig):
                         pred_7d[1], gt_7d[1],  # Y
                         pred_7d[2], gt_7d[2],  # Z
                         pred_7d[3], gt_7d[3],  # Roll
-                        pred_7d[4], gt_7d[4],  # Pitch
-                        pred_7d[5], gt_7d[5],  # Yaw
-                        pred_7d[6], gt_7d[6]   # Gripper
+                        pred_7d[4], gt_7d[4],  # Gripper
+                        pred_7d[5], gt_7d[5],  # Pitch
+                        pred_7d[6], gt_7d[6]   # Yaw
                     ])
 
                 # --- E. Visualization (Images) ---
@@ -195,8 +215,19 @@ def main(cfg: EvalConfig):
 
                 if should_render:
                     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-                    ax[0].imshow(img_overhead); ax[0].set_title("Overhead"); ax[0].axis('off')
-                    ax[1].imshow(img_wrist); ax[1].set_title("Wrist"); ax[1].axis('off')
+                    
+                    # For display, we might want to swap BGR->RGB if not done earlier
+                    # If you uncommented the swap above, you don't need it here.
+                    show_overhead = img_overhead[..., ::-1] # Swap for plotting
+                    show_wrist = img_wrist[..., ::-1]       # Swap for plotting
+                    
+                    ax[0].imshow(show_overhead)
+                    ax[0].set_title("Overhead")
+                    ax[0].axis('off')
+                    
+                    ax[1].imshow(show_wrist)
+                    ax[1].set_title("Wrist")
+                    ax[1].axis('off')
                     
                     info = (
                         f"Step: {step_idx} | MSE: {mse:.4f}\n"
@@ -208,13 +239,14 @@ def main(cfg: EvalConfig):
                     
                     if cfg.save_first_image and episode_idx == 0 and step_idx == 0:
                         plt.savefig(os.path.join(cfg.output_dir, "sanity_check_first_frame.png"))
+                        print("[INFO] Saved sanity check image.")
 
                     if cfg.save_plots:
                         plt.savefig(os.path.join(cfg.output_dir, f"ep{episode_idx}_step{step_idx}.png"))
                     
                     if cfg.visualize:
                         plt.show(block=False)
-                        plt.pause(0.1) # Brief pause to render
+                        plt.pause(0.1) 
                     
                     plt.close(fig)
 
@@ -228,44 +260,35 @@ def main(cfg: EvalConfig):
     # --- F. GENERATE SUMMARY PLOTS ---
     print("\n[INFO] Generating Summary Graphs...")
     if len(all_preds) > 0:
-        all_preds = np.array(all_preds) # Shape: (N_steps, 7)
-        all_gts = np.array(all_gts)     # Shape: (N_steps, 7)
+        all_preds = np.array(all_preds) 
+        all_gts = np.array(all_gts)     
         
-        # Dimensions names
-        dim_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw", "Gripper"]
+        dim_names = ["X", "Y", "Z", "Roll", "Gripper", "Pitch", "Yaw"]
         
-        # Create a tall figure with 7 subplots
         fig_summary, axes = plt.subplots(7, 1, figsize=(12, 24), sharex=True)
         
         for i, ax in enumerate(axes):
-            # 1. Ground Truth (Black Solid)
             ax.plot(all_gts[:, i], label='Ground Truth', color='black', alpha=0.6, linewidth=2)
-            
-            # 2. Prediction (Blue Dashed)
             ax.plot(all_preds[:, i], label='Prediction', color='blue', linestyle='--', alpha=0.8, linewidth=1.5)
             
-            # 3. Difference (Red Area/Line)
             diff = all_gts[:, i] - all_preds[:, i]
             ax.plot(diff, label='Diff (GT - Pred)', color='red', alpha=0.5, linewidth=1)
-            # Optional: Fill area under diff for visibility
             ax.fill_between(range(len(diff)), diff, 0, color='red', alpha=0.1)
             
             ax.set_ylabel(f"{dim_names[i]}")
             ax.grid(True, linestyle=':', alpha=0.6)
             
-            # Only put legend on the first plot to save space
             if i == 0:
                 ax.legend(loc="upper right")
 
         axes[-1].set_xlabel("Evaluation Steps (Concatenated Episodes)")
         fig_summary.suptitle(f"Evaluation Metrics: {cfg.dataset_name}", fontsize=16)
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97]) # Adjust for title
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97]) 
         
         save_plot_path = os.path.join(cfg.output_dir, "summary_metrics.png")
         plt.savefig(save_plot_path)
         print(f"[INFO] Summary plots saved to: {save_plot_path}")
         
-        # Optionally show if visualize is True
         if cfg.visualize:
             plt.show()
     else:

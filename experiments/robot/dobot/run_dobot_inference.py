@@ -45,8 +45,8 @@ SAFETY_LIMITS = {
 ACTION_SCALE = 1.0
 
 # 2. Gripper Thresholds (Hysteresis)
-GRIPPER_ON_THRESHOLD = 0.9  # Must be very confident to turn ON
-GRIPPER_OFF_THRESHOLD = 0.1 # Must be very confident to turn OFF
+GRIPPER_ON_THRESHOLD = 0.5  # Must be very confident to turn ON
+GRIPPER_OFF_THRESHOLD = -0.5 # Must be very confident to turn OFF
 
 MAX_STEP_MM = 20.0 
 
@@ -54,14 +54,14 @@ MAX_STEP_MM = 20.0
 class InferenceConfig:
     robot_ip: str = "192.168.208.1"  
     robot_port: int = 65432
-    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--600_chkpt"
+    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--1500_chkpt"
     model_family: str = "openvla"
     load_in_8bit: bool = False
     load_in_4bit: bool = False
     center_crop: bool = True  
     num_images_in_input: int = 2
     unnorm_key: str = "dobot_dataset" 
-    use_proprio: bool = False
+    use_proprio: bool = True
     use_film: bool = False
     instruction: str = "pick up the red block"
 
