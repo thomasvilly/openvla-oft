@@ -66,7 +66,7 @@ class EvalConfig:
     save_first_image: bool = True  # Always good for debugging
     
     output_dir: str = "./eval_outputs"
-    action_scale = 1.0
+    action_scale = 25.0
 
 @draccus.wrap()
 def main(cfg: EvalConfig):
