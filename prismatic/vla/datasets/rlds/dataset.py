@@ -186,14 +186,23 @@ def make_dataset_from_rlds(
             "dataset_name": tf.repeat(name, traj_len),
         }
 
-        if absolute_action_mask is not None:
-            if len(absolute_action_mask) != traj["action"].shape[-1]:
-                raise ValueError(
-                    f"Length of absolute_action_mask ({len(absolute_action_mask)}) "
-                    f"does not match action dimension ({traj['action'].shape[-1]})."
-                )
+        mask_to_use = absolute_action_mask
+
+        if mask_to_use is not None:
+            # --- START FIX ---
+            # Check shapes
+            action_shape = traj["action"].shape[-1]
+            mask_shape = len(mask_to_use)
+            
+            # Auto-correct if shapes don't match (e.g. 5 vs 7)
+            if mask_shape != action_shape:
+                # Create a new mask of the correct size (All True)
+                mask_to_use = tf.ones(action_shape, dtype=tf.bool)
+            # --- END FIX ---
+            
+            # Apply the mask (using the corrected 'mask_to_use')
             traj["absolute_action_mask"] = tf.tile(
-                tf.convert_to_tensor(absolute_action_mask, dtype=tf.bool)[None],
+                tf.convert_to_tensor(mask_to_use, dtype=tf.bool)[None],
                 [traj_len, 1],
             )
 
@@ -221,14 +230,23 @@ def make_dataset_from_rlds(
         )
     dataset_statistics = tree_map(np.array, dataset_statistics)
 
-    # skip normalization for certain action dimensions
-    if action_normalization_mask is not None:
-        if len(action_normalization_mask) != dataset_statistics["action"]["mean"].shape[-1]:
-            raise ValueError(
-                f"Length of skip_normalization_mask ({len(action_normalization_mask)}) "
-                f"does not match action dimension ({dataset_statistics['action']['mean'].shape[-1]})."
-            )
-        dataset_statistics["action"]["mask"] = np.array(action_normalization_mask)
+    # --- START FIX ---
+    # We copy it to 'mask_to_use' so we can modify it safely.
+    mask_to_use = action_normalization_mask
+
+    if mask_to_use is not None:
+        # Check against the actual data statistics (which we know are 5-dim)
+        stats_shape = dataset_statistics["action"]["mean"].shape[-1]
+        
+        if len(mask_to_use) != stats_shape:
+            # Mismatch detected (e.g. 7 vs 5). Create a new valid mask.
+            # Default: Normalize everything (False), but skip Gripper (True)
+            mask_to_use = [False] * ACTION_DIM
+            mask_to_use[-1] = True
+        
+        # Save the corrected mask back to statistics
+        dataset_statistics["action"]["mask"] = np.array(mask_to_use)
+    # --- END FIX ---
 
     # construct the dataset
     split = "train" if train else "val"
