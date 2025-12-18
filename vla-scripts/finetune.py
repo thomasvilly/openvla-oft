@@ -310,7 +310,20 @@ def run_forward_pass(
     metrics = {}
 
     # Get ground-truth action labels
-    ground_truth_actions = batch["actions"].to(device_id).to(torch.bfloat16)
+    #ground_truth_actions = batch["actions"].to(device_id).to(torch.bfloat16)
+
+    # --- CUSTOM DOBOT SLICING ---
+    # We want indices 0,1,2,3 (XYZR) and 6 (Gripper). We skip 4,5 (Pitch, Yaw).
+    raw_actions = batch["actions"].to(device_id).to(torch.bfloat16)
+    
+    # Check if we are in Dobot mode (Action Dim 5) but data is Dim 7
+    if raw_actions.shape[-1] == 7 and ACTION_DIM == 5:
+        # Select X, Y, Z, Roll, Gripper
+        target_indices = torch.tensor([0, 1, 2, 3, 6], device=device_id)
+        ground_truth_actions = torch.index_select(raw_actions, -1, target_indices)
+    else:
+        ground_truth_actions = raw_actions
+    # ----------------------------
 
     # [Only for diffusion] Sample noisy actions used as input for noise predictor network
     if use_diffusion:
