@@ -1,102 +1,217 @@
+import h5py
 import tensorflow_datasets as tfds
 import tensorflow as tf
-import h5py
 import numpy as np
-import glob
 import os
+import shutil
 
-# --- CONFIGURATION ---
-INPUT_HDF5_DIR = "/mnt/d/DOBOT/dataset_hdf5"
-OUTPUT_RLDS_DIR = "/mnt/d/DOBOT/rlds_dataset_folder"
+_DESCRIPTION = """
+Dobot Magician dataset for OpenVLA.
+Features:
+- Stride=2 (Effective 2x speedup)
+- 5-Dim Action Space (X, Y, Z, Roll, Gripper)
+- Discretized Gripper Commands (-1, 0, 1)
+"""
+
+_CITATION = """
+@article{dobot_dataset,
+  title={Dobot Magician Dataset},
+  author={User},
+  year={2025}
+}
+"""
 
 class DobotDataset(tfds.core.GeneratorBasedBuilder):
-    """DatasetBuilder for dobot_dataset (RLDS Format)."""
-    
-    VERSION = tfds.core.Version('1.0.0')
+    VERSION = tfds.core.Version('1.1.0')
+    RELEASE_NOTES = {
+        '1.0.0': 'Initial release.',
+        '1.1.0': 'Stride=2, Pruned Action Space (5-Dim), Discrete Gripper.',
+    }
 
     def _info(self) -> tfds.core.DatasetInfo:
         return tfds.core.DatasetInfo(
             builder=self,
-            description="Dobot dataset using Temporal Deltas for OpenVLA.",
+            description=_DESCRIPTION,
             features=tfds.features.FeaturesDict({
                 'steps': tfds.features.Dataset({
-                    'action': tfds.features.Tensor(shape=(7,), dtype=np.float32), # Now Temporal Deltas
                     'observation': tfds.features.FeaturesDict({
-                        'image': tfds.features.Image(shape=(None, None, 3), encoding_format='jpeg'),
-                        'image_wrist': tfds.features.Image(shape=(None, None, 3), encoding_format='jpeg'), # New key
-                        'state': tfds.features.Tensor(shape=(7,), dtype=np.float32),
+                        'image': tfds.features.Image(
+                            shape=(480, 640, 3),
+                            dtype=np.uint8,
+                            encoding_format='jpeg',
+                            doc='Main camera RGB observation.',
+                        ),
+                        'image_wrist': tfds.features.Image(
+                            shape=(480, 640, 3),
+                            dtype=np.uint8,
+                            encoding_format='jpeg',
+                            doc='Wrist camera RGB observation.',
+                        ),
+                        'state': tfds.features.Tensor(
+                            shape=(5,), # Pruned State (X,Y,Z,R,G)
+                            dtype=np.float32,
+                            doc='Robot state (x, y, z, r, gripper)',
+                        ),
                     }),
-                    'language_instruction': tfds.features.Text(),
-                    'is_first': tfds.features.Scalar(dtype=np.bool_),
-                    'is_last': tfds.features.Scalar(dtype=np.bool_),
-                    'is_terminal': tfds.features.Scalar(dtype=np.bool_),
+                    'action': tfds.features.Tensor(
+                        shape=(5,), # Pruned Action (X,Y,Z,R,G)
+                        dtype=np.float32,
+                        doc='Robot action (d_x, d_y, d_z, d_r, gripper_cmd)',
+                    ),
+                    'discount': tfds.features.Scalar(
+                        dtype=np.float32,
+                        doc='Discount if provided, default to 1.'
+                    ),
+                    'reward': tfds.features.Scalar(
+                        dtype=np.float32,
+                        doc='Reward if provided, 1 on final step for demos.'
+                    ),
+                    'is_first': tfds.features.Scalar(
+                        dtype=np.bool_,
+                        doc='True on first step of the episode.'
+                    ),
+                    'is_last': tfds.features.Scalar(
+                        dtype=np.bool_,
+                        doc='True on last step of the episode.'
+                    ),
+                    'is_terminal': tfds.features.Scalar(
+                        dtype=np.bool_,
+                        doc='True on last step of the episode if it is a terminal step, True for demos.'
+                    ),
+                    'language_instruction': tfds.features.Text(
+                        doc='Language Instruction.'
+                    ),
+                    'language_embedding': tfds.features.Tensor(
+                        shape=(512,),
+                        dtype=np.float32,
+                        doc='Kona language embedding. (Optional)'
+                    ),
                 }),
-                'episode_metadata': tfds.features.FeaturesDict({'file_path': tfds.features.Text()}),
+                'episode_metadata': tfds.features.FeaturesDict({
+                    'file_path': tfds.features.Text(
+                        doc='Path to the original data file.'
+                    ),
+                }),
             }),
-            supervised_keys=None, 
+            supervised_keys=None,
+            homepage='https://google.com',
+            citation=_CITATION,
         )
 
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
-        file_paths = sorted(glob.glob(os.path.join(INPUT_HDF5_DIR, "**", "*.h5"), recursive=True))
-        return {'train': self._generate_examples(file_paths)}
+        # Point this to your hdf5 folder
+        root_dir = "/mnt/d/DOBOT/dataset_hdf5" 
+        
+        # Walk through all job folders
+        file_paths = []
+        for root, dirs, files in os.walk(root_dir):
+            for file in files:
+                if file.endswith(".h5"):
+                    file_paths.append(os.path.join(root, file))
+        
+        print(f"Found {len(file_paths)} HDF5 files.")
+        
+        return {
+            'train': self._generate_examples(file_paths),
+        }
 
     def _generate_examples(self, file_paths):
-        for episode_idx, file_path in enumerate(file_paths):
+        STRIDE = 2
+        global_idx = 0 
+        
+        for file_path in file_paths:
             try:
                 with h5py.File(file_path, 'r') as f:
-                    # 'state' in your HDF5 is the actual robot pose recorded
-                    states = f['observations/state'][:] 
-                    images_top = f['observations/images/top'][:]
-                    images_side = f['observations/images/side'][:]
+                    imgs_top = f['observations/images/top'][:]
+                    imgs_side = f['observations/images/side'][:]
+                    states = f['observations/state'][:]
                     
-                    instruction = f.attrs.get('instruction', "pick up block")
-                    if isinstance(instruction, bytes): instruction = instruction.decode('utf-8')
-                    
-                    num_steps = len(states)
-                    episode_steps = []
-
-                    # Process up to num_steps - 1 because we need i+1 for the delta
-                    for i in range(num_steps):
-                        img_top = images_top[i]
-                        img_side = images_side[i]
-
-                        if img_top.shape[-1] == 3: img_top = img_top[... , ::-1] # BGR to RGB
-                        if img_side.shape[-1] == 3: img_side = img_side[... , ::-1]
+                    n_steps = len(imgs_top)
+                    instruction = f.attrs.get('instruction', "do the task")
+                    if isinstance(instruction, bytes):
+                        instruction = instruction.decode('utf-8')
                         
-                        # --- CALC DELTA ---
-                        if i < num_steps - 1:
-                            # Arm Deltas (X, Y, Z, R, P, Y)
-                            delta_arm = states[i+1][:6] - states[i][:6]
-                            # Gripper: Use Absolute state from step i+1
-                            # This tells the model: "Given this image, make the gripper look like THIS next"
-                            target_gripper = states[i+1][6]
+                    episode = []
+                    # STRIDE LOOP
+                    for i in range(0, n_steps - STRIDE, STRIDE):
+                        
+                        # ... (Observations logic stays the same) ...
+                        img = imgs_top[i]
+                        wrist = imgs_side[i]
+                        
+                        full_state = states[i]
+                        curr_xyzr = full_state[[0, 1, 2, 3]]
+                        curr_grip = full_state[6]
+                        
+                        future_state = states[i + STRIDE]
+                        future_xyzr = future_state[[0, 1, 2, 3]]
+                        future_grip = future_state[6]
+                        
+                        # --- VELOCITY & GRIPPER LOGIC ---
+                        delta_xyzr = future_xyzr - curr_xyzr
+                        
+                        # Discretize Gripper
+                        grip_diff = future_grip - curr_grip
+                        if grip_diff > 0.5:
+                            grip_cmd = 1.0
+                        elif grip_diff < -0.5:
+                            grip_cmd = -1.0
                         else:
-                            delta_arm = np.zeros(6)
-                            target_gripper = states[i][6]
-
-                        # Combine into the 7-DOF action vector
-                        action_vec = np.append(delta_arm, target_gripper).astype(np.float32)
+                            grip_cmd = 0.0
                         
-                        episode_steps.append({
-                            'action': action_vec,
+                        # --- NEW: FORCE DROP AT END ---
+                        # If this is the last step in our strided sequence, force the gripper to open (-1.0).
+                        # This compensates for the missing "Open" click in your recording.
+                        is_last_step = (i >= (n_steps - 2 * STRIDE))
+                        if is_last_step:
+                            grip_cmd = -1.0
+                        # ------------------------------
+
+                        action_5d = np.concatenate([delta_xyzr, [grip_cmd]]).astype(np.float32)
+                        state_5d = np.concatenate([curr_xyzr, [curr_grip]]).astype(np.float32)
+                        
+                        episode.append({
                             'observation': {
-                                'image': img_top,
-                                'image_wrist': img_side,
-                                'state': states[i].astype(np.float32), # Store absolute current state
+                                'image': img,
+                                'image_wrist': wrist,
+                                'state': state_5d,
                             },
-                            'language_instruction': instruction,
+                            'action': action_5d,
+                            'discount': 1.0,
+                            'reward': float(is_last_step),
                             'is_first': i == 0,
-                            'is_last': i == (num_steps - 1),
-                            'is_terminal': i == (num_steps - 1),
+                            'is_last': is_last_step,
+                            'is_terminal': is_last_step,
+                            'language_instruction': instruction,
+                            'language_embedding': np.zeros(512, dtype=np.float32),
                         })
+
+                    sample_key = f"{global_idx:06d}"
+                    global_idx += 1
                     
-                    yield f"episode_{episode_idx}", {
-                        'steps': episode_steps,
+                    yield sample_key, {
+                        'steps': episode,
                         'episode_metadata': {'file_path': file_path}
                     }
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
 
 if __name__ == "__main__":
-    builder = DobotDataset(data_dir=OUTPUT_RLDS_DIR)
+    print("--- Running Direct Builder (Bypassing TFDS CLI) ---")
+    
+    dataset_name = "dobot_dataset"
+    version = "1.1.0"
+    data_dir = "/mnt/d/DOBOT/rlds_dataset_folder"
+    target_dir = os.path.join(data_dir, dataset_name, version)
+
+    # Manual Cleanup
+    if os.path.exists(target_dir):
+        print(f"[Cleanup] Removing partial/old build at: {target_dir}")
+        shutil.rmtree(target_dir)
+    else:
+        print(f"[Cleanup] No existing {version} folder found. Starting fresh.")
+
+    builder = DobotDataset(data_dir=data_dir)
     builder.download_and_prepare()
+    
+    print("--- Success! Dataset 1.1.0 Generated ---")

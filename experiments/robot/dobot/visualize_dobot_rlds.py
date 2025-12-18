@@ -20,6 +20,9 @@ def visualize_rlds():
             # Pull both images
             img_top = step['observation']['image'].numpy()
             img_wrist = step['observation']['image_wrist'].numpy()
+
+            img_top = img_top[:, :, ::-1]
+            img_wrist = img_wrist[:, :, ::-1]
             
             state = step['observation']['state'].numpy()
             action = step['action'].numpy() # Temporal Delta
@@ -51,7 +54,7 @@ def visualize_rlds():
                 f"Instruction: {instr}",
                 f"State (Abs): X:{state[0]:.1f} Y:{state[1]:.1f} Z:{state[2]:.1f} R:{state[3]:.1f}",
                 f"Action (Delta): dX:{action[0]:+.3f} dY:{action[1]:+.3f} dZ:{action[2]:+.3f}",
-                f"Grip: {action[6]:.0f} | Is_First: {step['is_first'].numpy()} | Is_Last: {step['is_last'].numpy()}"
+                f"Grip: {action[-1]:.0f} | Is_First: {step['is_first'].numpy()} | Is_Last: {step['is_last'].numpy()}"
             ]
             for i, line in enumerate(info):
                 cv2.putText(overlay, line, (20, y0 + i*dy), 

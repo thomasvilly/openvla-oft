@@ -34,7 +34,7 @@ from experiments.robot.openvla_utils import (
 @dataclass
 class EvalConfig:
     # --- Paths ---
-    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--600_chkpt"
+    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--5000_chkpt"
     
     # Dataset Config
     dataset_name: str = "dobot_dataset"
@@ -56,10 +56,10 @@ class EvalConfig:
     use_film: bool = False
     
     # --- Visualization & Output Configuration ---
-    visualize: bool = True        
+    visualize: bool = False
     save_plots: bool = False      
     save_csv: bool = True         
-    save_first_image: bool = True 
+    save_first_image: bool = False
     
     output_dir: str = "./eval_outputs"
 
