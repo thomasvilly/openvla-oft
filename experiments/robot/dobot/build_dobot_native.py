@@ -11,6 +11,7 @@ Features:
 - Stride=2 (Effective 2x speedup)
 - 5-Dim Action Space (X, Y, Z, Roll, Gripper)
 - Discretized Gripper Commands (-1, 0, 1)
+- FILTERS: Removes dead frames (<1mm) and teleportation artifacts (>50mm).
 """
 
 _CITATION = """
@@ -22,10 +23,11 @@ _CITATION = """
 """
 
 class DobotDataset(tfds.core.GeneratorBasedBuilder):
-    VERSION = tfds.core.Version('1.1.0')
+    VERSION = tfds.core.Version('1.2.0')
     RELEASE_NOTES = {
         '1.0.0': 'Initial release.',
         '1.1.0': 'Stride=2, Pruned Action Space (5-Dim), Discrete Gripper.',
+        '1.2.0': 'Stride=2, Pruned Action Space (5-Dim), Discrete Gripper, Filter Homing Steps & Dead Zones.',
     }
 
     def _info(self) -> tfds.core.DatasetInfo:
@@ -119,6 +121,13 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
         STRIDE = 2
         global_idx = 0 
         
+        # --- FILTERS ---
+        # 1. Laziness: If robot moves less than 1mm, we skip the frame (unless gripper changes)
+        MIN_MOVE_MM = 1.0   
+        # 2. Teleportation: If robot moves > 50mm in 0.1s, it's a reset artifact. Skip it.
+        MAX_MOVE_MM = 50.0  
+        # ---------------
+
         for file_path in file_paths:
             try:
                 with h5py.File(file_path, 'r') as f:
@@ -132,10 +141,10 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                         instruction = instruction.decode('utf-8')
                         
                     episode = []
+                    
                     # STRIDE LOOP
                     for i in range(0, n_steps - STRIDE, STRIDE):
                         
-                        # ... (Observations logic stays the same) ...
                         img = imgs_top[i]
                         wrist = imgs_side[i]
                         
@@ -159,13 +168,27 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                         else:
                             grip_cmd = 0.0
                         
-                        # --- NEW: FORCE DROP AT END ---
-                        # If this is the last step in our strided sequence, force the gripper to open (-1.0).
-                        # This compensates for the missing "Open" click in your recording.
+                        # --- FORCE DROP AT END ---
                         is_last_step = (i >= (n_steps - 2 * STRIDE))
                         if is_last_step:
                             grip_cmd = -1.0
+                            # Force a gripper change event logic for the last step
+                            grip_diff = -1.0 
                         # ------------------------------
+
+                        # --- DATA CLEANING (THE FIX) ---
+                        move_mag = np.linalg.norm(delta_xyzr[:3])
+                        
+                        # 1. Filter Outliers (Teleportation)
+                        if move_mag > MAX_MOVE_MM:
+                            continue # Skip this frame
+                            
+                        # 2. Filter Laziness (Dead Frames)
+                        # Only skip if NO movement AND NO gripper activity
+                        has_grip_change = abs(grip_diff) > 0.1
+                        if move_mag < MIN_MOVE_MM and not has_grip_change and not is_last_step:
+                            continue # Skip this frame
+                        # -------------------------------
 
                         action_5d = np.concatenate([delta_xyzr, [grip_cmd]]).astype(np.float32)
                         state_5d = np.concatenate([curr_xyzr, [curr_grip]]).astype(np.float32)
@@ -186,13 +209,21 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                             'language_embedding': np.zeros(512, dtype=np.float32),
                         })
 
-                    sample_key = f"{global_idx:06d}"
-                    global_idx += 1
-                    
-                    yield sample_key, {
-                        'steps': episode,
-                        'episode_metadata': {'file_path': file_path}
-                    }
+                    # Only yield if the episode survived the cleaning
+                    if len(episode) > 0:
+                        # Fix is_first / is_last flags after filtering
+                        episode[0]['is_first'] = True
+                        episode[-1]['is_last'] = True
+                        episode[-1]['is_terminal'] = True
+                        episode[-1]['reward'] = 1.0
+
+                        sample_key = f"{global_idx:06d}"
+                        global_idx += 1
+                        
+                        yield sample_key, {
+                            'steps': episode,
+                            'episode_metadata': {'file_path': file_path}
+                        }
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
 
@@ -200,7 +231,7 @@ if __name__ == "__main__":
     print("--- Running Direct Builder (Bypassing TFDS CLI) ---")
     
     dataset_name = "dobot_dataset"
-    version = "1.1.0"
+    version = "1.2.0"
     data_dir = "/mnt/d/DOBOT/rlds_dataset_folder"
     target_dir = os.path.join(data_dir, dataset_name, version)
 
@@ -214,4 +245,4 @@ if __name__ == "__main__":
     builder = DobotDataset(data_dir=data_dir)
     builder.download_and_prepare()
     
-    print("--- Success! Dataset 1.1.0 Generated ---")
+    print("--- Success! Dataset 1.2.0 Generated ---")
