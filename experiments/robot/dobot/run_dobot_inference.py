@@ -49,7 +49,7 @@ class InferenceConfig:
     robot_port: int = 65432
     
     # Path to your 5000-step checkpoint
-    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--5000_chkpt"
+    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--1500_chkpt"
     
     model_family: str = "openvla"
     load_in_8bit: bool = False
@@ -241,17 +241,17 @@ def main(cfg: InferenceConfig):
     processor = get_processor(cfg)
     
     # --- HOTFIX: Patch Model Statistics (7D -> 5D) ---
-    if cfg.unnorm_key in model.norm_stats:
-        print(f"[Patch] Checking statistics dimensions for {cfg.unnorm_key}...")
-        action_stats = model.norm_stats[cfg.unnorm_key]["action"]
+    # if cfg.unnorm_key in model.norm_stats:
+    #     print(f"[Patch] Checking statistics dimensions for {cfg.unnorm_key}...")
+    #     action_stats = model.norm_stats[cfg.unnorm_key]["action"]
         
-        # ADDED "mask" TO THIS LIST
-        for key in ["q01", "q99", "min", "max", "mean", "std", "mask"]:
-            if key in action_stats:
-                stat_arr = action_stats[key]
-                if len(stat_arr) == 7:
-                    print(f"  -> Slicing {key} from 7 to 5 dimensions.")
-                    action_stats[key] = stat_arr[:5]
+    #     # ADDED "mask" TO THIS LIST
+    #     for key in ["q01", "q99", "min", "max", "mean", "std", "mask"]:
+    #         if key in action_stats:
+    #             stat_arr = action_stats[key]
+    #             if len(stat_arr) == 7:
+    #                 print(f"  -> Slicing {key} from 7 to 5 dimensions.")
+    #                 action_stats[key] = stat_arr[:5]
     # -------------------------------------------------
 
     try:
@@ -292,8 +292,6 @@ def main(cfg: InferenceConfig):
                     current_pose_4d[1], # Y
                     current_pose_4d[2], # Z
                     current_pose_4d[3], # Roll
-                    0.0,                # Pitch (Pad)
-                    0.0,                # Yaw (Pad)
                     float(current_gripper_state) # Grip
                 ])
             else:
