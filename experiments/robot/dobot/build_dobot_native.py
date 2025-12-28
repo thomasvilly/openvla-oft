@@ -119,12 +119,14 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
 
     def _generate_examples(self, file_paths):
         STRIDE = 2
+        # Minimum steps required for OpenVLA to form a valid training chunk.
+        # OpenVLA often needs a buffer for action chunking. 16 is a safe safety margin.
+        MIN_EPISODE_LENGTH = 16 
+        
         global_idx = 0 
         
         # --- FILTERS ---
-        # 1. Laziness: If robot moves less than 1mm, we skip the frame (unless gripper changes)
         MIN_MOVE_MM = 1.0   
-        # 2. Teleportation: If robot moves > 50mm in 0.1s, it's a reset artifact. Skip it.
         MAX_MOVE_MM = 50.0  
         # ---------------
 
@@ -170,24 +172,22 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                         
                         # --- FORCE DROP AT END ---
                         is_last_step = (i >= (n_steps - 2 * STRIDE))
-                        if is_last_step:
-                            grip_cmd = -1.0
-                            # Force a gripper change event logic for the last step
-                            grip_diff = -1.0 
+                        # if is_last_step:
+                        #     grip_cmd = -1.0
+                        #     grip_diff = -1.0 
                         # ------------------------------
 
-                        # --- DATA CLEANING (THE FIX) ---
+                        # --- DATA CLEANING ---
                         move_mag = np.linalg.norm(delta_xyzr[:3])
                         
-                        # 1. Filter Outliers (Teleportation)
+                        # 1. Filter Outliers
                         if move_mag > MAX_MOVE_MM:
-                            continue # Skip this frame
+                            continue 
                             
-                        # 2. Filter Laziness (Dead Frames)
-                        # Only skip if NO movement AND NO gripper activity
+                        # 2. Filter Laziness
                         has_grip_change = abs(grip_diff) > 0.1
                         if move_mag < MIN_MOVE_MM and not has_grip_change and not is_last_step:
-                            continue # Skip this frame
+                            continue 
                         # -------------------------------
 
                         action_5d = np.concatenate([delta_xyzr, [grip_cmd]]).astype(np.float32)
@@ -209,21 +209,25 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                             'language_embedding': np.zeros(512, dtype=np.float32),
                         })
 
-                    # Only yield if the episode survived the cleaning
-                    if len(episode) > 0:
-                        # Fix is_first / is_last flags after filtering
-                        episode[0]['is_first'] = True
-                        episode[-1]['is_last'] = True
-                        episode[-1]['is_terminal'] = True
-                        episode[-1]['reward'] = 1.0
+                    # --- CRITICAL FIX: CHECK LENGTH BEFORE YIELDING ---
+                    if len(episode) < MIN_EPISODE_LENGTH:
+                        # Skip this episode entirely if it's too short (prevents loader crash)
+                        # print(f"Skipping short episode in {os.path.basename(file_path)} (Len: {len(episode)})")
+                        continue
 
-                        sample_key = f"{global_idx:06d}"
-                        global_idx += 1
-                        
-                        yield sample_key, {
-                            'steps': episode,
-                            'episode_metadata': {'file_path': file_path}
-                        }
+                    # If we survive, fix flags and yield
+                    episode[0]['is_first'] = True
+                    episode[-1]['is_last'] = True
+                    episode[-1]['is_terminal'] = True
+                    episode[-1]['reward'] = 1.0
+
+                    sample_key = f"{global_idx:06d}"
+                    global_idx += 1
+                    
+                    yield sample_key, {
+                        'steps': episode,
+                        'episode_metadata': {'file_path': file_path}
+                    }
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
 

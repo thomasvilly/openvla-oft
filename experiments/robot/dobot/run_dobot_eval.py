@@ -36,7 +36,7 @@ from experiments.robot.openvla_utils import (
 class EvalConfig:
     # --- Paths ---
     # Update this to your actual Run 3 checkpoint path!
-    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--1500_chkpt"
+    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--6000_chkpt"
     
     # Dataset Config
     dataset_name: str = "dobot_dataset"
