@@ -8,7 +8,7 @@ import shutil
 _DESCRIPTION = """
 Dobot Magician dataset for OpenVLA.
 Features:
-- Stride=2 (Effective 2x speedup)
+- Stride Action
 - 5-Dim Action Space (X, Y, Z, Roll, Gripper)
 - Discretized Gripper Commands (-1, 0, 1)
 - FILTERS: Removes dead frames (<1mm) and teleportation artifacts (>50mm).
@@ -23,11 +23,12 @@ _CITATION = """
 """
 
 class DobotDataset(tfds.core.GeneratorBasedBuilder):
-    VERSION = tfds.core.Version('1.2.0')
+    VERSION = tfds.core.Version('1.3.0')
     RELEASE_NOTES = {
         '1.0.0': 'Initial release.',
         '1.1.0': 'Stride=2, Pruned Action Space (5-Dim), Discrete Gripper.',
         '1.2.0': 'Stride=2, Pruned Action Space (5-Dim), Discrete Gripper, Filter Homing Steps & Dead Zones.',
+        '1.3.0': 'Move to overfit attempt'
     }
 
     def _info(self) -> tfds.core.DatasetInfo:
@@ -42,12 +43,6 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                             dtype=np.uint8,
                             encoding_format='jpeg',
                             doc='Main camera RGB observation.',
-                        ),
-                        'image_wrist': tfds.features.Image(
-                            shape=(480, 640, 3),
-                            dtype=np.uint8,
-                            encoding_format='jpeg',
-                            doc='Wrist camera RGB observation.',
                         ),
                         'state': tfds.features.Tensor(
                             shape=(5,), # Pruned State (X,Y,Z,R,G)
@@ -102,7 +97,7 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
 
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         # Point this to your hdf5 folder
-        root_dir = "/mnt/d/DOBOT/dataset_hdf5" 
+        root_dir = "/mnt/d/DOBOT/dataset_hdf5/interactive_session" 
         
         # Walk through all job folders
         file_paths = []
@@ -118,10 +113,10 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
         }
 
     def _generate_examples(self, file_paths):
-        STRIDE = 2
+        STRIDE = 1
         # Minimum steps required for OpenVLA to form a valid training chunk.
         # OpenVLA often needs a buffer for action chunking. 16 is a safe safety margin.
-        MIN_EPISODE_LENGTH = 16 
+        MIN_EPISODE_LENGTH = 10
         
         global_idx = 0 
         
@@ -133,8 +128,7 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
         for file_path in file_paths:
             try:
                 with h5py.File(file_path, 'r') as f:
-                    imgs_top = f['observations/images/top'][:]
-                    imgs_side = f['observations/images/side'][:]
+                    imgs_top = f['observations/images/top'][1:]
                     states = f['observations/state'][:]
                     
                     n_steps = len(imgs_top)
@@ -145,10 +139,9 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                     episode = []
                     
                     # STRIDE LOOP
-                    for i in range(0, n_steps - STRIDE, STRIDE):
+                    for i in range(0, n_steps, STRIDE):
                         
                         img = imgs_top[i]
-                        wrist = imgs_side[i]
                         
                         full_state = states[i]
                         curr_xyzr = full_state[[0, 1, 2, 3]]
@@ -196,7 +189,6 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                         episode.append({
                             'observation': {
                                 'image': img,
-                                'image_wrist': wrist,
                                 'state': state_5d,
                             },
                             'action': action_5d,
@@ -235,7 +227,7 @@ if __name__ == "__main__":
     print("--- Running Direct Builder (Bypassing TFDS CLI) ---")
     
     dataset_name = "dobot_dataset"
-    version = "1.2.0"
+    version = "1.3.0"
     data_dir = "/mnt/d/DOBOT/rlds_dataset_folder"
     target_dir = os.path.join(data_dir, dataset_name, version)
 
@@ -249,4 +241,4 @@ if __name__ == "__main__":
     builder = DobotDataset(data_dir=data_dir)
     builder.download_and_prepare()
     
-    print("--- Success! Dataset 1.2.0 Generated ---")
+    print("--- Success! Dataset 1.3.0 Generated ---")

@@ -158,14 +158,13 @@ class RobotClient:
                     img2_data = self._recv_exact(len2)
                     
                     img_overhead = cv2.imdecode(np.frombuffer(img1_data, np.uint8), cv2.IMREAD_COLOR)
-                    img_wrist = cv2.imdecode(np.frombuffer(img2_data, np.uint8), cv2.IMREAD_COLOR)
                     
                     # Get Pose
                     self._send_json({"cmd": "GET_POSE"})
                     resp = self._recv_json()
                     if resp and 'pose' in resp:
                         pose = np.array(resp['pose'][:4])
-                        return img_overhead, img_wrist, pose
+                        return img_overhead, pose
                 except Exception as e:
                     print(f"[Info] Observation failed ({e}). Retrying...")
             
@@ -280,10 +279,9 @@ def main(cfg: InferenceConfig):
             t0 = time.time()
             
             # 1. Observation
-            img_overhead_bgr, img_wrist_bgr, current_pose_4d = robot.get_observation()
+            img_overhead_bgr, current_pose_4d = robot.get_observation()
             
             img_overhead = cv2.cvtColor(img_overhead_bgr, cv2.COLOR_BGR2RGB)
-            img_wrist = cv2.cvtColor(img_wrist_bgr, cv2.COLOR_BGR2RGB)
 
             # 2. Proprioception Construction (Pad to 7D)
             if cfg.use_proprio:
@@ -299,7 +297,6 @@ def main(cfg: InferenceConfig):
 
             obs = {
                 "full_image": img_overhead,
-                "wrist_image": img_wrist,
                 "state": proprio_state
             }
             

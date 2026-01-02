@@ -41,7 +41,7 @@ class EvalConfig:
     # Dataset Config
     dataset_name: str = "dobot_dataset"
     # UPDATED: Point to 1.1.0 (The strided/pruned version)
-    data_dir: str = "/mnt/d/DOBOT/rlds_dataset_folder/dobot_dataset/1.1.0" 
+    data_dir: str = "/mnt/d/DOBOT/rlds_dataset_folder/dobot_dataset/1.3.0" 
     split: str = "train[:10%]" 
 
     # --- Model Params ---
@@ -128,7 +128,6 @@ def main(cfg: EvalConfig):
 
                 # --- A. Prepare Observation ---
                 img_overhead = step['observation']['image'].numpy()
-                img_wrist = step['observation']['image_wrist'].numpy()
                 
                 # FIX: Color Swap (BGR -> RGB) if needed
                 # If your visualizer needed this, your eval needs it too for the model to see 'Red' correctly.
@@ -143,7 +142,6 @@ def main(cfg: EvalConfig):
 
                 obs = {
                     "full_image": img_overhead,
-                    "wrist_image": img_wrist,
                     "state": step['observation']['state'].numpy() if cfg.use_proprio else None
                 }
 
@@ -219,15 +217,10 @@ def main(cfg: EvalConfig):
                     # For display, we might want to swap BGR->RGB if not done earlier
                     # If you uncommented the swap above, you don't need it here.
                     show_overhead = img_overhead[..., ::-1] # Swap for plotting
-                    show_wrist = img_wrist[..., ::-1]       # Swap for plotting
                     
                     ax[0].imshow(show_overhead)
                     ax[0].set_title("Overhead")
                     ax[0].axis('off')
-                    
-                    ax[1].imshow(show_wrist)
-                    ax[1].set_title("Wrist")
-                    ax[1].axis('off')
                     
                     info = (
                         f"Step: {step_idx} | MSE: {mse:.4f}\n"

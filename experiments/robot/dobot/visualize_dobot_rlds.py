@@ -19,10 +19,8 @@ def visualize_rlds():
         for step in episode['steps']:
             # Pull both images
             img_top = step['observation']['image'].numpy()
-            img_wrist = step['observation']['image_wrist'].numpy()
 
             img_top = img_top[:, :, ::-1]
-            img_wrist = img_wrist[:, :, ::-1]
             
             state = step['observation']['state'].numpy()
             action = step['action'].numpy() # Temporal Delta
@@ -32,9 +30,6 @@ def visualize_rlds():
             top_view = cv2.cvtColor(img_top, cv2.COLOR_RGB2BGR)
             top_view = cv2.resize(top_view, (500, 500))
             
-            wrist_view = cv2.cvtColor(img_wrist, cv2.COLOR_RGB2BGR)
-            wrist_view = cv2.resize(wrist_view, (500, 500))
-            
             # Draw Delta Arrow on Top View
             cx, cy = 250, 250
             scale = 10.0
@@ -43,12 +38,9 @@ def visualize_rlds():
             
             if np.linalg.norm(action[:2]) > 0.05:
                 cv2.arrowedLine(top_view, (cx, cy), (ex, ey), (0, 0, 255), 2)
-
-            # Combine side-by-side
-            combined = np.hstack((top_view, wrist_view))
             
             # Black overlay for text
-            overlay = np.zeros((150, combined.shape[1], 3), dtype=np.uint8)
+            overlay = np.zeros((150, top_view.shape[1], 3), dtype=np.uint8)
             y0, dy = 30, 25
             info = [
                 f"Instruction: {instr}",
@@ -60,7 +52,7 @@ def visualize_rlds():
                 cv2.putText(overlay, line, (20, y0 + i*dy), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
-            final_display = np.vstack((combined, overlay))
+            final_display = np.vstack((top_view, overlay))
             cv2.imshow("RDLS Dual-Camera Verification", final_display)
             
             key = cv2.waitKey(0)
