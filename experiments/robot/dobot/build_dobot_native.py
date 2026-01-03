@@ -9,7 +9,7 @@ _DESCRIPTION = """
 Dobot Magician dataset for OpenVLA.
 Features:
 - Stride Action
-- 5-Dim Action Space (X, Y, Z, Roll, Gripper)
+- 4-Dim Action Space (X, Y, Z, Gripper)
 - Discretized Gripper Commands (-1, 0, 1)
 - FILTERS: Removes dead frames (<1mm) and teleportation artifacts (>50mm).
 """
@@ -45,15 +45,15 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                             doc='Main camera RGB observation.',
                         ),
                         'state': tfds.features.Tensor(
-                            shape=(5,), # Pruned State (X,Y,Z,R,G)
+                            shape=(4,), # Pruned State (X,Y,Z,G)
                             dtype=np.float32,
-                            doc='Robot state (x, y, z, r, gripper)',
+                            doc='Robot state (x, y, z, gripper)',
                         ),
                     }),
                     'action': tfds.features.Tensor(
-                        shape=(5,), # Pruned Action (X,Y,Z,R,G)
+                        shape=(4,), # Pruned Action (X,Y,Z,G)
                         dtype=np.float32,
-                        doc='Robot action (d_x, d_y, d_z, d_r, gripper_cmd)',
+                        doc='Robot action (d_x, d_y, d_z, gripper_cmd)',
                     ),
                     'discount': tfds.features.Scalar(
                         dtype=np.float32,
@@ -97,7 +97,7 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
 
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         # Point this to your hdf5 folder
-        root_dir = "/mnt/d/DOBOT/dataset_hdf5/interactive_session" 
+        root_dir = "/mnt/d/DOBOT/dataset_hdf5/interactive_session"
         
         # Walk through all job folders
         file_paths = []
@@ -144,15 +144,15 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                         img = imgs_top[i]
                         
                         full_state = states[i]
-                        curr_xyzr = full_state[[0, 1, 2, 3]]
+                        curr_xyz = full_state[[0, 1, 2]]
                         curr_grip = full_state[6]
                         
                         future_state = states[i + STRIDE]
-                        future_xyzr = future_state[[0, 1, 2, 3]]
+                        future_xyz = future_state[[0, 1, 2]]
                         future_grip = future_state[6]
                         
                         # --- VELOCITY & GRIPPER LOGIC ---
-                        delta_xyzr = future_xyzr - curr_xyzr
+                        delta_xyz = future_xyz - curr_xyz
                         
                         # Discretize Gripper
                         grip_diff = future_grip - curr_grip
@@ -171,7 +171,7 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                         # ------------------------------
 
                         # --- DATA CLEANING ---
-                        move_mag = np.linalg.norm(delta_xyzr[:3])
+                        move_mag = np.linalg.norm(delta_xyz)
                         
                         # 1. Filter Outliers
                         if move_mag > MAX_MOVE_MM:
@@ -183,15 +183,15 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                             continue 
                         # -------------------------------
 
-                        action_5d = np.concatenate([delta_xyzr, [grip_cmd]]).astype(np.float32)
-                        state_5d = np.concatenate([curr_xyzr, [curr_grip]]).astype(np.float32)
+                        action_4d = np.concatenate([delta_xyz, [grip_cmd]]).astype(np.float32)
+                        state_4d = np.concatenate([curr_xyz, [curr_grip]]).astype(np.float32)
                         
                         episode.append({
                             'observation': {
                                 'image': img,
-                                'state': state_5d,
+                                'state': state_4d,
                             },
-                            'action': action_5d,
+                            'action': action_4d,
                             'discount': 1.0,
                             'reward': float(is_last_step),
                             'is_first': i == 0,

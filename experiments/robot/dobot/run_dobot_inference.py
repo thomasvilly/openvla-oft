@@ -178,8 +178,8 @@ class RobotClient:
         dummy_pose = np.array([200.0, 0.0, 0.0, 0.0]) # Safe home pose
         return dummy_img, dummy_img, dummy_pose
 
-    def move(self, x, y, z, r):
-        cmd = {"cmd": "MOVE", "x": x, "y": y, "z": z, "r": r}
+    def move(self, x, y, z):
+        cmd = {"cmd": "MOVE", "x": x, "y": y, "z": z}
         self._send_json(cmd)
         self._recv_json() # Wait for ACK
 
@@ -192,12 +192,11 @@ class RobotClient:
         if self.sock: self.sock.close()
 
 def check_safety_clamp(target, current):
-    x, y, z, r = target
+    x, y, z = target
     
     # 1. Clamp Z and R (Standard Box Limits)
     # Z: -50 is usually table level. 150 is safe height.
     z = np.clip(z, -50.0, 150.0) 
-    r = np.clip(r, -140.0, 140.0)
 
     # 2. Clamp Radius (The "Arc" Limit)
     # Dobot Magician Max Reach is ~320mm. We limit to 310mm for safety.
@@ -219,7 +218,7 @@ def check_safety_clamp(target, current):
 
     # 3. Step Size Clamp (Prevent Teleporting)
     # Re-calculate delta from CURRENT valid pose to TARGET valid pose
-    cur_x, cur_y, cur_z, _ = current
+    cur_x, cur_y, cur_z = current
     dist_sq = (x - cur_x)**2 + (y - cur_y)**2 + (z - cur_z)**2
     max_step = MAX_STEP_MM**2
     
@@ -229,7 +228,7 @@ def check_safety_clamp(target, current):
         y = cur_y + (y - cur_y) * scale
         z = cur_z + (z - cur_z) * scale
 
-    return x, y, z, r
+    return x, y, z
 
 @draccus.wrap()
 def main(cfg: InferenceConfig):
@@ -289,7 +288,6 @@ def main(cfg: InferenceConfig):
                     current_pose_4d[0], # X
                     current_pose_4d[1], # Y
                     current_pose_4d[2], # Z
-                    current_pose_4d[3], # Roll
                     float(current_gripper_state) # Grip
                 ])
             else:
@@ -317,10 +315,10 @@ def main(cfg: InferenceConfig):
                 action = action[0]
             
             # 5. Process Deltas
-            delta_xyzr = action[:4]
+            delta_xyz = action[:3]
             raw_gripper = action[-1]
             
-            delta_xyzr = delta_xyzr * ACTION_SCALE
+            delta_xyz = delta_xyz * ACTION_SCALE
             
             # 6. Gripper Logic
             if raw_gripper > GRIPPER_ON_THRESHOLD:
@@ -329,15 +327,15 @@ def main(cfg: InferenceConfig):
                 current_gripper_state = 0
 
             # 7. Safety & Execute
-            target_pose = current_pose_4d + delta_xyzr
-            safe_x, safe_y, safe_z, safe_r = check_safety_clamp(target_pose, current_pose_4d)
+            target_pose = current_pose_4d + delta_xyz
+            safe_x, safe_y, safe_z = check_safety_clamp(target_pose, current_pose_4d)
             
             dt = time.time() - t0
             print(f"Step {step} ({dt:.3f}s):")
-            print(f"  Delta: {np.round(delta_xyzr, 2)}")
+            print(f"  Delta: {np.round(delta_xyz, 2)}")
             print(f"  Grip:  {raw_gripper:.2f} -> {current_gripper_state}")
             
-            robot.move(safe_x, safe_y, safe_z, safe_r)
+            robot.move(safe_x, safe_y, safe_z)
             robot.grip(current_gripper_state)
             
             step += 1

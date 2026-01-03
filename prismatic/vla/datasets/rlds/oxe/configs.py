@@ -707,8 +707,7 @@ OXE_DATASET_CONFIGS = {
         "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
     },
     "dobot_dataset": {
-        # Update keys to include the wrist camera
-        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "image_wrist"},
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": None},
         "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
         
         "state_obs_keys": ["state"],

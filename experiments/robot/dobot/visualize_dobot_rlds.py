@@ -44,7 +44,7 @@ def visualize_rlds():
             y0, dy = 30, 25
             info = [
                 f"Instruction: {instr}",
-                f"State (Abs): X:{state[0]:.1f} Y:{state[1]:.1f} Z:{state[2]:.1f} R:{state[3]:.1f}",
+                f"State (Abs): X:{state[0]:.1f} Y:{state[1]:.1f} Z:{state[2]:.1f}",
                 f"Action (Delta): dX:{action[0]:+.3f} dY:{action[1]:+.3f} dZ:{action[2]:+.3f}",
                 f"Grip: {action[-1]:.0f} | Is_First: {step['is_first'].numpy()} | Is_Last: {step['is_last'].numpy()}"
             ]

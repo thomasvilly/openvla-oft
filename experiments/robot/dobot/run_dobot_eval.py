@@ -168,13 +168,13 @@ def main(cfg: EvalConfig):
                 elif isinstance(action_pred, np.ndarray) and action_pred.ndim > 1:
                     action_pred = action_pred[0]
                 
-                if len(action_pred) >= 4:
-                    action_pred[:4] = action_pred[:4] * cfg.action_scale
+                if len(action_pred) >= 3:
+                    action_pred[:3] = action_pred[:3] * cfg.action_scale
                     
                 action_gt = step['action'].numpy()
 
                 # Pad vectors to ensure 7 dims (XYZ, RPY, Grip)
-                # Model outputs 5 dims. We pad with 0s to fill the 7-slot report.
+                # Model outputs 4 dims. We pad with 0s to fill the 7-slot report.
                 pred_7d = np.pad(action_pred, (0, max(0, 7-len(action_pred))), mode='constant')
                 gt_7d = np.pad(action_gt, (0, max(0, 7-len(action_gt))), mode='constant')
 
