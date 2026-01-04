@@ -2,10 +2,11 @@
 run_dobot_inference.py
 
 Live Inference Client for OpenVLA on Dobot.
-FIXES:
-- Patches 'mask' in stats (Fixes 7D vs 5D crash)
-- Handles 7D Proprioception Padding
-- Tuned Action Scale (25.0)
+UPDATED FIXES:
+- Uses get_vla_action (Connects Brain to Hands)
+- Manually loads Action Head & Proprio Projector (Fixes "Dumb Model" issue)
+- Disables Center Crop (Fixes "Zoom" issue)
+- Action Scale Tuned
 """
 
 import os
@@ -14,6 +15,7 @@ import socket
 import struct
 import json
 import time
+import glob
 import numpy as np
 import cv2
 import torch
@@ -24,22 +26,25 @@ from typing import Union
 
 sys.path.append(os.getcwd()) 
 
+# --- IMPORTS UPDATED ---
 from experiments.robot.robot_utils import (
     get_model,
-    get_action,
     set_seed_everywhere,
 )
 from experiments.robot.openvla_utils import (
     get_processor,
+    get_action_head,
+    get_proprio_projector,
+    get_vla_action  # <--- The correct inference function
 )
 
-
 # 1. Action Scale (Gain)
-ACTION_SCALE = 1.0
+# Based on your findings, we need a high scale because the regression is dampened.
+ACTION_SCALE = 25.0
 
 # 2. Gripper Hysteresis
-GRIPPER_ON_THRESHOLD = 0.5 
-GRIPPER_OFF_THRESHOLD = -0.5
+GRIPPER_ON_THRESHOLD = 0.3
+GRIPPER_OFF_THRESHOLD = -0.3
 
 MAX_STEP_MM = 20.0 
 
@@ -48,18 +53,23 @@ class InferenceConfig:
     robot_ip: str = "192.168.208.1"  
     robot_port: int = 65432
     
-    # Path to your 5000-step checkpoint
-    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--1500_chkpt"
+    # Path to your working checkpoint
+    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r64+dropout-0.0--2500_chkpt"
     
     model_family: str = "openvla"
     load_in_8bit: bool = False
     load_in_4bit: bool = False
     
-    center_crop: bool = True  
-    num_images_in_input: int = 2
-    
+    # --- CRITICAL FIXES ---
+    center_crop: bool = False  # MUST BE FALSE to match training
+    use_l1_regression: bool = True
+    use_diffusion: bool = False
+    num_diffusion_steps_train: int = 50
+    num_diffusion_steps_inference: int = 50
+    # ----------------------
+
+    num_images_in_input: int = 1
     unnorm_key: str = "dobot_dataset" 
-    
     use_proprio: bool = True
     use_film: bool = False
     
@@ -76,7 +86,6 @@ class RobotClient:
     def connect(self):
         """Attempts to connect to the robot server."""
         try:
-            # Always close old socket before creating a new one
             if self.sock:
                 try:
                     self.sock.close()
@@ -84,8 +93,7 @@ class RobotClient:
                     pass
             
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(2.0) # 2-second timeout to detect hangs
-            
+            self.sock.settimeout(2.0)
             print(f"[Client] Connecting to Robot at {self.ip}:{self.port}...")
             self.sock.connect((self.ip, self.port))
             print("[Client] Connected.")
@@ -100,7 +108,6 @@ class RobotClient:
                 raise socket.error("No socket")
                 
             msg = json.dumps(data).encode('utf-8')
-            # Pack length (4 bytes) + JSON message
             self.sock.sendall(struct.pack('>I', len(msg)) + msg)
             return True
         except (socket.error, BrokenPipeError, AttributeError):
@@ -134,32 +141,27 @@ class RobotClient:
                 data += packet
             except socket.timeout:
                 break
-            # Hard timeout to prevent infinite blocking
             if time.time() - start_t > 2.0: 
                 break
         return data
 
     def get_observation(self):
-        # Retry loop: Try 3 times to get an image, then fail gracefully
         for _ in range(3):
-            # Only try to receive if send succeeded
             if self._send_json({"cmd": "GET_IMAGE"}):
                 try:
-                    # Manually handle the raw bytes for images here
-                    # (We can't use _recv_json because images are raw bytes, not JSON)
                     len1_data = self._recv_exact(4)
                     if not len1_data: raise socket.error("No header")
                     len1 = struct.unpack('>I', len1_data)[0]
                     img1_data = self._recv_exact(len1)
                     
+                    # Consume second image if protocol sends it (even if unused)
                     len2_data = self._recv_exact(4)
-                    if not len2_data: raise socket.error("No header 2")
-                    len2 = struct.unpack('>I', len2_data)[0]
-                    img2_data = self._recv_exact(len2)
+                    if len2_data:
+                        len2 = struct.unpack('>I', len2_data)[0]
+                        _ = self._recv_exact(len2)
                     
                     img_overhead = cv2.imdecode(np.frombuffer(img1_data, np.uint8), cv2.IMREAD_COLOR)
                     
-                    # Get Pose
                     self._send_json({"cmd": "GET_POSE"})
                     resp = self._recv_json()
                     if resp and 'pose' in resp:
@@ -168,56 +170,44 @@ class RobotClient:
                 except Exception as e:
                     print(f"[Info] Observation failed ({e}). Retrying...")
             
-            # If we failed, reconnect and wait a bit
             self.connect()
             time.sleep(0.5)
             
-        # If all retries fail, return zeros to prevent the whole script from crashing
         print("[Error] Could not get observation after retries.")
         dummy_img = np.zeros((240,320,3), dtype=np.uint8)
-        dummy_pose = np.array([200.0, 0.0, 0.0, 0.0]) # Safe home pose
-        return dummy_img, dummy_img, dummy_pose
+        dummy_pose = np.array([200.0, 0.0, 0.0, 0.0])
+        return dummy_img, dummy_pose
 
     def move(self, x, y, z):
         cmd = {"cmd": "MOVE", "x": x, "y": y, "z": z}
         self._send_json(cmd)
-        self._recv_json() # Wait for ACK
+        self._recv_json()
 
     def grip(self, state):
         cmd = {"cmd": "GRIP", "state": float(state)}
         self._send_json(cmd)
-        self._recv_json() # Wait for ACK
+        self._recv_json()
         
     def close(self):
         if self.sock: self.sock.close()
 
 def check_safety_clamp(target, current):
     x, y, z = target
-    
-    # 1. Clamp Z and R (Standard Box Limits)
-    # Z: -50 is usually table level. 150 is safe height.
     z = np.clip(z, -50.0, 150.0) 
 
-    # 2. Clamp Radius (The "Arc" Limit)
-    # Dobot Magician Max Reach is ~320mm. We limit to 310mm for safety.
-    # Dobot Min Reach (Inner Radius) is ~140mm (can't hit its own base).
     radius = np.sqrt(x**2 + y**2)
     max_radius = 310.0
     min_radius = 140.0
     
     if radius > max_radius:
-        # Pull back towards base
         scale = max_radius / radius
-        x = x * scale
-        y = y * scale
+        x *= scale
+        y *= scale
     elif radius < min_radius:
-        # Push out away from base
         scale = min_radius / radius
-        x = x * scale
-        y = y * scale
+        x *= scale
+        y *= scale
 
-    # 3. Step Size Clamp (Prevent Teleporting)
-    # Re-calculate delta from CURRENT valid pose to TARGET valid pose
     cur_x, cur_y, cur_z = current
     dist_sq = (x - cur_x)**2 + (y - cur_y)**2 + (z - cur_z)**2
     max_step = MAX_STEP_MM**2
@@ -236,21 +226,48 @@ def main(cfg: InferenceConfig):
     
     print(f"Loading model from {cfg.pretrained_checkpoint}...")
     model = get_model(cfg)
-    processor = get_processor(cfg)
     
-    # --- HOTFIX: Patch Model Statistics (7D -> 5D) ---
-    # if cfg.unnorm_key in model.norm_stats:
-    #     print(f"[Patch] Checking statistics dimensions for {cfg.unnorm_key}...")
-    #     action_stats = model.norm_stats[cfg.unnorm_key]["action"]
+    # --- COMPONENT LOADER (From your working Eval script) ---
+    def load_component_weights(component, path):
+        print(f"    > Loading weights from: {path}")
+        state_dict = torch.load(path, map_location=model.device)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("module."):
+                new_state_dict[k[7:]] = v
+            else:
+                new_state_dict[k] = v
+        try:
+            component.load_state_dict(new_state_dict)
+            print("    [+] Weights loaded successfully!")
+        except Exception as e:
+            print(f"    [!] Error loading weights: {e}")
+
+    # 1. Setup & Load Action Head
+    print("\n[LOADER] Setting up Action Head...")
+    model.action_head = get_action_head(cfg, llm_dim=4096) 
+    model.action_head.to(model.device)
+    model.action_head.dtype = model.dtype
+    
+    ah_files = glob.glob(os.path.join(cfg.pretrained_checkpoint, "action_head*.pt"))
+    if ah_files:
+        load_component_weights(model.action_head, ah_files[0])
+    else:
+        print("[!] WARNING: No Action Head weights found!")
+
+    # 2. Setup & Load Proprio Projector
+    if cfg.use_proprio:
+        print("\n[LOADER] Setting up Proprio Projector...")
+        model.proprio_projector = get_proprio_projector(cfg, llm_dim=4096, proprio_dim=4)
+        model.proprio_projector.to(model.device)
+        model.proprio_projector.dtype = model.dtype
         
-    #     # ADDED "mask" TO THIS LIST
-    #     for key in ["q01", "q99", "min", "max", "mean", "std", "mask"]:
-    #         if key in action_stats:
-    #             stat_arr = action_stats[key]
-    #             if len(stat_arr) == 7:
-    #                 print(f"  -> Slicing {key} from 7 to 5 dimensions.")
-    #                 action_stats[key] = stat_arr[:5]
-    # -------------------------------------------------
+        pp_files = glob.glob(os.path.join(cfg.pretrained_checkpoint, "proprio_projector*.pt"))
+        if pp_files:
+            load_component_weights(model.proprio_projector, pp_files[0])
+    # -----------------------------------------------------
+
+    processor = get_processor(cfg)
 
     try:
         robot = RobotClient(cfg.robot_ip, cfg.robot_port)
@@ -267,28 +284,26 @@ def main(cfg: InferenceConfig):
     try:
         step = 0
         while True:
-            # SAFETY CHECK: If robot disconnected, wait for it
             if robot.sock is None:
                 print("Waiting for robot connection...")
                 robot.connect()
                 time.sleep(1.0)
                 continue
 
-            # ... rest of loop ...
             t0 = time.time()
             
             # 1. Observation
             img_overhead_bgr, current_pose_4d = robot.get_observation()
-            
             img_overhead = cv2.cvtColor(img_overhead_bgr, cv2.COLOR_BGR2RGB)
 
-            # 2. Proprioception Construction (Pad to 7D)
+            # 2. Proprioception (Pad to 7D logic if needed, but 4D works if stats patched)
             if cfg.use_proprio:
+                # We feed the 4D state: X, Y, Z, Grip
                 proprio_state = np.array([
-                    current_pose_4d[0], # X
-                    current_pose_4d[1], # Y
-                    current_pose_4d[2], # Z
-                    float(current_gripper_state) # Grip
+                    current_pose_4d[0],
+                    current_pose_4d[1],
+                    current_pose_4d[2],
+                    float(current_gripper_state)
                 ])
             else:
                 proprio_state = None
@@ -298,13 +313,15 @@ def main(cfg: InferenceConfig):
                 "state": proprio_state
             }
             
-            # 3. Inference
-            action = get_action(
+            # 3. Inference (UPDATED to get_vla_action)
+            action = get_vla_action(
                 cfg=cfg,
-                model=model,
+                vla=model,
                 obs=obs,
                 task_label=cfg.instruction,
                 processor=processor,
+                action_head=model.action_head,
+                proprio_projector=model.proprio_projector if cfg.use_proprio else None,
                 use_film=cfg.use_film
             )
             
