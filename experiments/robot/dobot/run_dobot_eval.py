@@ -12,6 +12,8 @@ import os
 import sys
 import csv
 import numpy as np
+import torch
+import glob
 import tensorflow_datasets as tfds
 import matplotlib.pyplot as plt
 import draccus
@@ -25,10 +27,13 @@ sys.path.append(os.getcwd())
 # Import standard utils
 from experiments.robot.robot_utils import (
     get_model,
-    get_action,
     set_seed_everywhere,
 )
+# Add this with your other imports
 from experiments.robot.openvla_utils import (
+    get_action_head, 
+    get_proprio_projector,
+    get_vla_action,
     get_processor,
 )
 
@@ -36,7 +41,7 @@ from experiments.robot.openvla_utils import (
 class EvalConfig:
     # --- Paths ---
     # Update this to your actual Run 3 checkpoint path!
-    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r32+dropout-0.0--image_aug--6000_chkpt"
+    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r64+dropout-0.0--2500_chkpt"
     
     # Dataset Config
     dataset_name: str = "dobot_dataset"
@@ -48,10 +53,15 @@ class EvalConfig:
     model_family: str = "openvla"
     load_in_8bit: bool = False
     load_in_4bit: bool = False
+
+    use_l1_regression: bool = True
+    use_diffusion: bool = False
+    num_diffusion_steps_train: int = 50
+    num_diffusion_steps_inference: int = 50
     
     # --- Input Params ---
-    center_crop: bool = True  
-    num_images_in_input: int = 2
+    center_crop: bool = False
+    num_images_in_input: int = 1
     
     # --- Action Params ---
     unnorm_key: str = "dobot_dataset" 
@@ -75,6 +85,54 @@ def main(cfg: EvalConfig):
     # 1. Load Model & Processor
     print(f"Loading model from {cfg.pretrained_checkpoint}...")
     model = get_model(cfg)
+
+    def load_component_weights(component, path):
+        """ Helper to load weights and strip 'module.' prefix from DDP training """
+        print(f"    > Loading weights from: {path}")
+        state_dict = torch.load(path, map_location=model.device)
+        
+        # Fix 'module.' prefix if present (Common DDP artifact)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("module."):
+                new_state_dict[k[7:]] = v
+            else:
+                new_state_dict[k] = v
+                
+        # Load into component
+        component.load_state_dict(new_state_dict)
+        print("    [+] Weights loaded successfully!")
+
+    # 1. Setup & Load Action Head (ResNet)
+    print("\n[LOADER] Setting up Action Head...")
+    # Use official helper to build the correct ResNet structure
+    # We assume LLM Dim is 4096 (Standard for 7B models)
+    model.action_head = get_action_head(cfg, llm_dim=4096) 
+    model.action_head.to(model.device)
+    model.action_head.dtype = model.dtype
+
+    # Find and load the weights
+    ah_files = glob.glob(os.path.join(cfg.pretrained_checkpoint, "action_head*.pt"))
+    if ah_files:
+        load_component_weights(model.action_head, ah_files[0])
+    else:
+        print("[!] WARNING: No Action Head weights found! Model will output garbage.")
+
+    # 2. Setup & Load Proprio Projector (MLP)
+    if cfg.use_proprio:
+        print("\n[LOADER] Setting up Proprio Projector...")
+        # Use official helper
+        model.proprio_projector = get_proprio_projector(cfg, llm_dim=4096, proprio_dim=4)
+        model.proprio_projector.to(model.device)
+        model.proprio_projector.dtype = model.dtype
+        
+        pp_files = glob.glob(os.path.join(cfg.pretrained_checkpoint, "proprio_projector*.pt"))
+        if pp_files:
+            load_component_weights(model.proprio_projector, pp_files[0])
+        else:
+            print("[!] WARNING: No Proprio weights found.")
+
+    # ==============================================================================
     processor = get_processor(cfg)
     
     # 2. Load RLDS Dataset
@@ -147,12 +205,14 @@ def main(cfg: EvalConfig):
 
                 # --- B. Inference ---
                 try:
-                    action_pred = get_action(
+                    action_pred = get_vla_action(
                         cfg=cfg,
-                        model=model,
+                        vla=model,
                         obs=obs,
                         task_label=task_label,
+                        action_head=model.action_head,
                         processor=processor,
+                        proprio_projector=model.proprio_projector if cfg.use_proprio else None,
                         use_film=cfg.use_film
                     )
                 except Exception as e:
@@ -256,7 +316,7 @@ def main(cfg: EvalConfig):
         all_preds = np.array(all_preds) 
         all_gts = np.array(all_gts)     
         
-        dim_names = ["X", "Y", "Z", "Roll", "Gripper", "Pitch", "Yaw"]
+        dim_names = ["X", "Y", "Z", "Gripper", "Roll", "Pitch", "Yaw"]
         
         fig_summary, axes = plt.subplots(7, 1, figsize=(12, 24), sharex=True)
         
