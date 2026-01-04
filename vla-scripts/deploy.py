@@ -38,7 +38,6 @@ from experiments.robot.robot_utils import (
 )
 from prismatic.vla.constants import ACTION_DIM, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
 
-
 def get_openvla_prompt(instruction: str, openvla_path: Union[str, Path]) -> str:
     return f"In: What action should the robot take to {instruction.lower()}?\nOut:"
 
@@ -83,6 +82,8 @@ class OpenVLAServer:
                 payload = json.loads(payload["encoded"])
 
             observation = payload
+            if "full_image" in observation and isinstance(observation["full_image"], list):
+                observation["full_image"] = np.array(observation["full_image"], dtype=np.uint8)
             instruction = observation["instruction"]
 
             action = get_vla_action(
@@ -119,21 +120,21 @@ class DeployConfig:
     # Model-specific parameters
     #################################################################################################################
     model_family: str = "openvla"                    # Model family
-    pretrained_checkpoint: Union[str, Path] = ""     # Pretrained checkpoint path
+    pretrained_checkpoint: Union[str, Path] = "checkpoints/openvla-7b+dobot_dataset+b16+lr-2e-05+lora-r64+dropout-0.0--2500_chkpt"     # Pretrained checkpoint path
 
     use_l1_regression: bool = True                   # If True, uses continuous action head with L1 regression objective
     use_diffusion: bool = False                      # If True, uses continuous action head with diffusion modeling objective (DDIM)
     num_diffusion_steps_train: int = 50              # (When `diffusion==True`) Number of diffusion steps used for training
     num_diffusion_steps_inference: int = 50          # (When `diffusion==True`) Number of diffusion steps used for inference
     use_film: bool = False                           # If True, uses FiLM to infuse language inputs into visual features
-    num_images_in_input: int = 3                     # Number of images in the VLA input (default: 3)
+    num_images_in_input: int = 1                     # Number of images in the VLA input (default: 3)
     use_proprio: bool = True                         # Whether to include proprio state in input
 
-    center_crop: bool = True                         # Center crop? (if trained w/ random crop image aug)
+    center_crop: bool = False                         # Center crop? (if trained w/ random crop image aug)
 
-    lora_rank: int = 32                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
+    lora_rank: int = 64                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
 
-    unnorm_key: Union[str, Path] = ""                # Action un-normalization key
+    unnorm_key: Union[str, Path] = "dobot_dataset"                # Action un-normalization key
     use_relative_actions: bool = False               # Whether to use relative actions (delta joint angles)
 
     load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
