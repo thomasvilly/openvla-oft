@@ -13,6 +13,7 @@ import io
 
 dataset = tf.data.TFRecordDataset(r"C:\Users\tevillen\Downloads\liber_o10-train.tfrecord-00000-of-00032")
 output_filename = "robot_episode_view.gif"
+figure_filename = "robot_trajectory.png"
 save = 1
 
 for d in dataset:
@@ -100,7 +101,9 @@ for d in dataset:
     ax3.set_title('Gripper Action', fontsize=10)
 
     plt.tight_layout()
-    plt.show()
     if save:
-        plt.savefig('robot_trajectory.png', dpi=300)
+        plt.savefig(figure_filename, dpi=300)
+        print(f"Figure saved to {figure_filename}")
+    else:
+        plt.show()
     break
