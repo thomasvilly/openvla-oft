@@ -141,7 +141,7 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
         
         # FILTERS
         MIN_MOVE_MM = 1.0   
-        MAX_MOVE_MM = 50.0  
+        MAX_MOVE_MM = 100.0  
         
         global_idx = 0 
 
