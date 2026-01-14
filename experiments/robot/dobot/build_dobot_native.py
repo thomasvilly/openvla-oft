@@ -22,13 +22,34 @@ _CITATION = """
 }
 """
 
+def gaussian_smooth_pure_numpy(data, sigma):
+    """
+    Applies Gaussian smoothing to action data using pure NumPy.
+    data: shape (N, 3) for XYZ
+    sigma: smoothing strength (Standard=1.0)
+    """
+    radius = int(4 * sigma + 0.5)
+    x = np.arange(-radius, radius + 1)
+    kernel = np.exp(-0.5 * (x / sigma)**2)
+    kernel /= kernel.sum() 
+    
+    smoothed = np.zeros_like(data)
+    
+    # Convolve each axis (X, Y, Z) independently
+    for col in range(data.shape[1]):
+        padded = np.pad(data[:, col], radius, mode='edge')
+        smoothed[:, col] = np.convolve(padded, kernel, mode='valid')
+        
+    return smoothed
+
 class DobotDataset(tfds.core.GeneratorBasedBuilder):
     VERSION = tfds.core.Version('1.3.0')
     RELEASE_NOTES = {
         '1.0.0': 'Initial release.',
         '1.1.0': 'Stride=2, Pruned Action Space (5-Dim), Discrete Gripper.',
         '1.2.0': 'Stride=2, Pruned Action Space (5-Dim), Discrete Gripper, Filter Homing Steps & Dead Zones.',
-        '1.3.0': 'Move to overfit attempt'
+        '1.3.0': 'Move to overfit attempt',
+        '1.4.0': 'Update action delta smoothness, still attempt overfit'
     }
 
     def _info(self) -> tfds.core.DatasetInfo:
@@ -113,85 +134,90 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
         }
 
     def _generate_examples(self, file_paths):
-        STRIDE = 1
-        # Minimum steps required for OpenVLA to form a valid training chunk.
-        # OpenVLA often needs a buffer for action chunking. 16 is a safe safety margin.
-        MIN_EPISODE_LENGTH = 10
+        # --- CONFIGURATION ---
+        STRIDE = 3            # Lookahead (0.3s @ 10Hz)
+        SIGMA = 1.0           # Gaussian Smoothing Strength
+        MIN_EPISODE_LENGTH = 16 
         
-        global_idx = 0 
-        
-        # --- FILTERS ---
+        # FILTERS
         MIN_MOVE_MM = 1.0   
         MAX_MOVE_MM = 50.0  
-        # ---------------
+        
+        global_idx = 0 
 
         for file_path in file_paths:
             try:
                 with h5py.File(file_path, 'r') as f:
-                    imgs_top = f['observations/images/top'][1:]
+                    # 1. Load Raw Data
+                    imgs_top = f['observations/images/top'][1:] # Skip first frame (often dark/blur)
                     states = f['observations/state'][:]
                     
-                    n_steps = len(imgs_top)
+                    # Align lengths (Camera sometimes has 1 more/less frame than state)
+                    min_len = min(len(imgs_top), len(states))
+                    imgs_top = imgs_top[:min_len]
+                    states = states[:min_len]
+                    
                     instruction = f.attrs.get('instruction', "do the task")
                     if isinstance(instruction, bytes):
                         instruction = instruction.decode('utf-8')
-                        
-                    episode = []
+
+                    # 2. PRE-CALCULATE ACTIONS (Rolling Window)
+                    # We need valid pairs: State[i] vs State[i+STRIDE]
+                    # This slices arrays so 'curr' is 0..N-STRIDE, 'future' is STRIDE..N
+                    curr_xyz = states[:-STRIDE, 0:3]
+                    future_xyz = states[STRIDE:, 0:3]
                     
-                    # STRIDE LOOP
-                    for i in range(0, n_steps, STRIDE):
-                        
+                    curr_grip = states[:-STRIDE, 6]
+                    future_grip = states[STRIDE:, 6]
+                    
+                    # Calculate Raw Deltas
+                    raw_actions_xyz = future_xyz - curr_xyz
+                    
+                    # 3. APPLY GAUSSIAN SMOOTHING
+                    smoothed_actions_xyz = gaussian_smooth_pure_numpy(raw_actions_xyz, sigma=SIGMA)
+                    
+                    episode = []
+                    n_steps = len(smoothed_actions_xyz) # This is effectively (Total_Frames - STRIDE)
+
+                    # 4. BUILD EPISODE
+                    for i in range(n_steps):
                         img = imgs_top[i]
                         
-                        full_state = states[i]
-                        curr_xyz = full_state[[0, 1, 2]]
-                        curr_grip = full_state[6]
+                        # XYZ Action (Smoothed)
+                        delta_xyz = smoothed_actions_xyz[i]
                         
-                        future_state = states[i + STRIDE]
-                        future_xyz = future_state[[0, 1, 2]]
-                        future_grip = future_state[6]
+                        # Gripper Action (Discrete Logic - No smoothing on binary buttons!)
+                        grip_diff = future_grip[i] - curr_grip[i]
+                        if grip_diff > 0.5: grip_cmd = 1.0
+                        elif grip_diff < -0.5: grip_cmd = -1.0
+                        else: grip_cmd = 0.0
                         
-                        # --- VELOCITY & GRIPPER LOGIC ---
-                        delta_xyz = future_xyz - curr_xyz
+                        # Force drop at very end of episode (optional safety)
+                        is_last_step = (i == n_steps - 1)
                         
-                        # Discretize Gripper
-                        grip_diff = future_grip - curr_grip
-                        if grip_diff > 0.5:
-                            grip_cmd = 1.0
-                        elif grip_diff < -0.5:
-                            grip_cmd = -1.0
-                        else:
-                            grip_cmd = 0.0
-                        
-                        # --- FORCE DROP AT END ---
-                        is_last_step = (i >= (n_steps - 2 * STRIDE))
-                        # if is_last_step:
-                        #     grip_cmd = -1.0
-                        #     grip_diff = -1.0 
-                        # ------------------------------
-
-                        # --- DATA CLEANING ---
+                        # --- FILTERS ---
                         move_mag = np.linalg.norm(delta_xyz)
+                        has_grip_change = abs(grip_cmd) > 0.1
                         
-                        # 1. Filter Outliers
-                        if move_mag > MAX_MOVE_MM:
-                            continue 
+                        # Filter: Huge teleportation (Tracking error)
+                        if move_mag > MAX_MOVE_MM: continue 
                             
-                        # 2. Filter Laziness
-                        has_grip_change = abs(grip_diff) > 0.1
+                        # Filter: Dead frames (Robot not moving, gripper not clicking)
                         if move_mag < MIN_MOVE_MM and not has_grip_change and not is_last_step:
-                            continue 
-                        # -------------------------------
+                             continue 
+                        # ---------------
 
-                        action_4d = np.concatenate([delta_xyz, [grip_cmd]]).astype(np.float32)
-                        state_4d = np.concatenate([curr_xyz, [curr_grip]]).astype(np.float32)
+                        # Pack Data
+                        # State includes Gripper (Idx 6)
+                        current_state_packed = np.concatenate([states[i, 0:3], [states[i, 6]]]).astype(np.float32)
+                        action_packed = np.concatenate([delta_xyz, [grip_cmd]]).astype(np.float32)
                         
                         episode.append({
                             'observation': {
                                 'image': img,
-                                'state': state_4d,
+                                'state': current_state_packed,
                             },
-                            'action': action_4d,
+                            'action': action_packed,
                             'discount': 1.0,
                             'reward': float(is_last_step),
                             'is_first': i == 0,
@@ -201,13 +227,11 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                             'language_embedding': np.zeros(512, dtype=np.float32),
                         })
 
-                    # --- CRITICAL FIX: CHECK LENGTH BEFORE YIELDING ---
+                    # Final Check
                     if len(episode) < MIN_EPISODE_LENGTH:
-                        # Skip this episode entirely if it's too short (prevents loader crash)
-                        # print(f"Skipping short episode in {os.path.basename(file_path)} (Len: {len(episode)})")
                         continue
 
-                    # If we survive, fix flags and yield
+                    # Patch flags just in case filtering broke continuity
                     episode[0]['is_first'] = True
                     episode[-1]['is_last'] = True
                     episode[-1]['is_terminal'] = True
@@ -220,6 +244,7 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
                         'steps': episode,
                         'episode_metadata': {'file_path': file_path}
                     }
+
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
 
