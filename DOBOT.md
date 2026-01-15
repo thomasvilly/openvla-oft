@@ -1,0 +1,3 @@
+conda activate openvla-train
+
+torchrun --nproc_per_node 1 vla-scripts/finetune.py   --vla_path "openvla/openvla-7b"   --dataset_name "dobot_dataset"   --data_root_dir "/mnt/d/DOBOT/rlds_dataset_folder"   --run_root_dir "./checkpoints"   --wandb_project "dobot-vla-smooth"   --wandb_entity "thomas-e-villeneuve-university-of-waterloo"   --run_id_note "run6_full_decay"   --lora_rank 32   --batch_size 8   --grad_accumulation_steps 2   --learning_rate 5e-4   --num_steps_before_decay 6000   --max_steps 10000   --save_freq 5000   --save_latest_checkpoint_only False   --image_aug True   --use_proprio True

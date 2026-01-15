@@ -22,6 +22,8 @@ _CITATION = """
 }
 """
 
+VER = "1.4.0"
+
 def gaussian_smooth_pure_numpy(data, sigma):
     """
     Applies Gaussian smoothing to action data using pure NumPy.
@@ -43,7 +45,7 @@ def gaussian_smooth_pure_numpy(data, sigma):
     return smoothed
 
 class DobotDataset(tfds.core.GeneratorBasedBuilder):
-    VERSION = tfds.core.Version('1.3.0')
+    VERSION = tfds.core.Version(VER)
     RELEASE_NOTES = {
         '1.0.0': 'Initial release.',
         '1.1.0': 'Stride=2, Pruned Action Space (5-Dim), Discrete Gripper.',
@@ -118,7 +120,7 @@ class DobotDataset(tfds.core.GeneratorBasedBuilder):
 
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         # Point this to your hdf5 folder
-        root_dir = "/mnt/d/DOBOT/dataset_hdf5/interactive_session"
+        root_dir = "/mnt/d/DOBOT/dataset_hdf5/simple_session"
         
         # Walk through all job folders
         file_paths = []
@@ -252,18 +254,15 @@ if __name__ == "__main__":
     print("--- Running Direct Builder (Bypassing TFDS CLI) ---")
     
     dataset_name = "dobot_dataset"
-    version = "1.3.0"
     data_dir = "/mnt/d/DOBOT/rlds_dataset_folder"
-    target_dir = os.path.join(data_dir, dataset_name, version)
+    target_dir = os.path.join(data_dir, dataset_name, VER)
 
     # Manual Cleanup
     if os.path.exists(target_dir):
         print(f"[Cleanup] Removing partial/old build at: {target_dir}")
         shutil.rmtree(target_dir)
     else:
-        print(f"[Cleanup] No existing {version} folder found. Starting fresh.")
+        print(f"[Cleanup] No existing {VER} folder found. Starting fresh.")
 
     builder = DobotDataset(data_dir=data_dir)
     builder.download_and_prepare()
-    
-    print("--- Success! Dataset 1.3.0 Generated ---")
